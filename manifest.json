@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
+	"id": "nostr-sync",
+	"name": "Nostr Sync",
+	"version": "0.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Sync your Nostr posts (kind1) to daily notes in Obsidian. Automatically fetch posts from relays at configurable intervals.",
+	"author": "Your Name",
+	"authorUrl": "",
 	"isDesktopOnly": false
 }
