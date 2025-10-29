@@ -116,6 +116,57 @@ export default class NostrSyncPlugin extends Plugin {
 		this.registerInterval(this.syncIntervalId);
 	}
 
+	async fetchAllHistoricalEvents(pubkey: string): Promise<NostrEvent[]> {
+		const allEvents: NostrEvent[] = [];
+		const BATCH_SIZE_MONTHS = 6; // Fetch 6 months at a time
+		const BATCH_SIZE_SECONDS = BATCH_SIZE_MONTHS * 30 * 24 * 60 * 60;
+
+		let currentUntil = Math.floor(Date.now() / 1000); // Start from now
+		let batchCount = 0;
+		let hasMoreEvents = true;
+
+		new Notice("Nostr: Fetching all historical posts...");
+
+		while (hasMoreEvents) {
+			batchCount++;
+			const currentSince = currentUntil - BATCH_SIZE_SECONDS;
+
+			const filter: any = {
+				kinds: [1],
+				authors: [pubkey],
+				since: currentSince,
+				until: currentUntil,
+			};
+
+			console.log(`Nostr: Fetching batch ${batchCount} (${moment.unix(currentSince).format("YYYY-MM-DD")} to ${moment.unix(currentUntil).format("YYYY-MM-DD")})`);
+
+			const batchEvents = await this.pool.querySync(
+				this.settings.relays,
+				filter,
+			);
+
+			if (batchEvents.length > 0) {
+				allEvents.push(...batchEvents);
+				new Notice(`Nostr: Batch ${batchCount} - Found ${batchEvents.length} posts (Total: ${allEvents.length})`);
+
+				// Move the time window backwards
+				currentUntil = currentSince;
+			} else {
+				// No more events found in this time range
+				hasMoreEvents = false;
+				new Notice(`Nostr: Finished fetching historical posts - Total: ${allEvents.length}`);
+			}
+
+			// Safety limit: stop after 10 years of history
+			if (batchCount > 20) {
+				new Notice("Nostr: Reached maximum history limit (10 years)");
+				hasMoreEvents = false;
+			}
+		}
+
+		return allEvents;
+	}
+
 	async syncNostrPosts() {
 		if (!this.settings.npub) {
 			new Notice("Nostr: Please configure your npub in settings");
@@ -133,21 +184,26 @@ export default class NostrSyncPlugin extends Plugin {
 			}
 			const pubkey = decoded.data as string;
 
-			// Fetch events from relays (only since last sync)
-			const filter: any = {
-				kinds: [1],
-				authors: [pubkey],
-			};
+			let events: NostrEvent[];
 
-			// Add timestamp filter for differential sync (only get new posts)
-			if (this.settings.lastSyncTimestamp > 0) {
-				filter.since = this.settings.lastSyncTimestamp;
+			// Check if this is initial sync or incremental sync
+			if (this.settings.lastSyncTimestamp === 0) {
+				// Initial sync: fetch all historical events using batching
+				new Notice("Nostr: Performing initial sync with batching...");
+				events = await this.fetchAllHistoricalEvents(pubkey);
+			} else {
+				// Incremental sync: only fetch new posts since last sync
+				const filter: any = {
+					kinds: [1],
+					authors: [pubkey],
+					since: this.settings.lastSyncTimestamp,
+				};
+
+				events = await this.pool.querySync(
+					this.settings.relays,
+					filter,
+				);
 			}
-
-			const events = await this.pool.querySync(
-				this.settings.relays,
-				filter,
-			);
 
 			// Filter out already synced events (extra safety check)
 			const newEvents = events.filter(
