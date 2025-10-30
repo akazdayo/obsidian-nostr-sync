@@ -117,7 +117,7 @@ export default class NostrSyncPlugin extends Plugin {
 	}
 
 	async fetchAllHistoricalEvents(pubkey: string): Promise<NostrEvent[]> {
-		const allEvents: NostrEvent[] = [];
+		const uniqueEvents = new Map<string, NostrEvent>();
 		const BATCH_SIZE_MONTHS = 6; // Fetch 6 months at a time
 		const BATCH_SIZE_SECONDS = BATCH_SIZE_MONTHS * 30 * 24 * 60 * 60;
 
@@ -129,7 +129,7 @@ export default class NostrSyncPlugin extends Plugin {
 
 		while (hasMoreEvents) {
 			batchCount++;
-			const currentSince = currentUntil - BATCH_SIZE_SECONDS;
+			const currentSince = Math.max(currentUntil - BATCH_SIZE_SECONDS, 0);
 
 			const filter: any = {
 				kinds: [1],
@@ -138,23 +138,54 @@ export default class NostrSyncPlugin extends Plugin {
 				until: currentUntil,
 			};
 
-			console.log(`Nostr: Fetching batch ${batchCount} (${moment.unix(currentSince).format("YYYY-MM-DD")} to ${moment.unix(currentUntil).format("YYYY-MM-DD")})`);
-
-			const batchEvents = await this.pool.querySync(
-				this.settings.relays,
-				filter,
+			console.log(
+				`Nostr: Fetching batch ${batchCount} (${moment
+					.unix(currentSince)
+					.format("YYYY-MM-DD")} to ${moment
+					.unix(currentUntil)
+					.format("YYYY-MM-DD")})`,
 			);
 
-			if (batchEvents.length > 0) {
-				allEvents.push(...batchEvents);
-				new Notice(`Nostr: Batch ${batchCount} - Found ${batchEvents.length} posts (Total: ${allEvents.length})`);
+			const batchEvents = (await this.pool.querySync(
+				this.settings.relays,
+				filter,
+			)) as NostrEvent[];
 
-				// Move the time window backwards
-				currentUntil = currentSince;
+			if (batchEvents.length > 0) {
+				let newEventsInBatch = 0;
+				for (const event of batchEvents) {
+					if (!uniqueEvents.has(event.id)) {
+						uniqueEvents.set(event.id, event);
+						newEventsInBatch++;
+					}
+				}
+
+				new Notice(
+					`Nostr: Batch ${batchCount} - Found ${newEventsInBatch} new post(s) (Total: ${uniqueEvents.size})`,
+				);
+
+				const earliestTimestamp = batchEvents.reduce<number>(
+					(min, event) => Math.min(min, event.created_at),
+					currentUntil,
+				);
+
+				// Move the time window backwards to just before the earliest event we saw
+				currentUntil = Math.max(earliestTimestamp - 1, currentSince);
 			} else {
-				// No more events found in this time range
+				console.log(
+					`Nostr: Batch ${batchCount} - No posts found (${moment
+						.unix(currentSince)
+						.format("YYYY-MM-DD")} to ${moment
+						.unix(currentUntil)
+						.format("YYYY-MM-DD")}), continuing search...`,
+				);
+
+				// No events in this window: shift the window further back
+				currentUntil = currentSince;
+			}
+
+			if (currentUntil <= 0) {
 				hasMoreEvents = false;
-				new Notice(`Nostr: Finished fetching historical posts - Total: ${allEvents.length}`);
 			}
 
 			// Safety limit: stop after 10 years of history
@@ -164,7 +195,13 @@ export default class NostrSyncPlugin extends Plugin {
 			}
 		}
 
-		return allEvents;
+		new Notice(
+			`Nostr: Finished fetching historical posts - Total: ${uniqueEvents.size}`,
+		);
+
+		return Array.from(uniqueEvents.values()).sort(
+			(a, b) => a.created_at - b.created_at,
+		);
 	}
 
 	async syncNostrPosts() {
